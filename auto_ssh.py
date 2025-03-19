@@ -9,6 +9,7 @@ import os
 from datetime import datetime
 
 DEFAULT_KEY_DIR = os.getenv("SSH_KEY_DIR", "~/aws-key")  # 환경 변수에서 읽기, 기본값 "~/key"
+SSH_MAX_WORKER = os.getenv("SSH_MAX_WORKER", 100)
 
 # 기존에 등록된 호스트 IP를 가져오는 함수
 def get_existing_hosts():
@@ -37,7 +38,7 @@ def is_port_open(ip, port, timeout=0.5):
 def scan_ip_range(ip_range, port, exclude_ips):
     open_ips = []
     ips = [ip for ip in ip_range.hosts() if str(ip) not in exclude_ips]
-    with ThreadPoolExecutor(max_workers=50) as executor:
+    with ThreadPoolExecutor(max_workers=SSH_MAX_WORKER) as executor:
         futures = {executor.submit(is_port_open, ip, port): ip for ip in ips}
         for future in tqdm(futures, total=len(futures), desc="IP 스캔 진행 중"):
             if future.result():
