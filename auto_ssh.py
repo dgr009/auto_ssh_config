@@ -8,13 +8,17 @@ from tqdm import tqdm
 import os
 from datetime import datetime
 
-DEFAULT_KEY_DIR = os.getenv("SSH_KEY_DIR", "~/aws-key")  # 환경 변수에서 읽기, 기본값 "~/key"
+DEFAULT_KEY_DIR = os.getenv("SSH_KEY_DIR", "~/key")
+SSH_CONFIG_FILE = os.getenv("SSH_CONFIG_FILE", "~/.ssh/config")
 SSH_MAX_WORKER = os.getenv("SSH_MAX_WORKER", 100)
+PORT_OPEN_TIMEOUT = os.getenv("PORT_OPEN_TIMEOUT", 0.5)
+SSH_TIMEOUT = os.getenv("SSH_TIMEOUT", 3)
+
 
 # 기존에 등록된 호스트 IP를 가져오는 함수
 def get_existing_hosts():
     existing_ips = set()
-    config_path = os.path.expanduser("~/.ssh/config")
+    config_path = os.path.expanduser(SSH_CONFIG_FILE)
     try:
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
@@ -27,7 +31,7 @@ def get_existing_hosts():
     return existing_ips
 
 # 포트가 열려 있는지 확인하는 함수
-def is_port_open(ip, port, timeout=0.5):
+def is_port_open(ip, port, timeout=PORT_OPEN_TIMEOUT):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     result = sock.connect_ex((str(ip), port))
@@ -78,7 +82,7 @@ def add_new_host(ip,port):
     key_choice = input(f"선택 (1-{len(key_files) + 1}): ") or "1"
     identity_file = f"~/key/{key_files[int(key_choice) - 1]}" if int(key_choice) <= len(key_files) else input("경로 입력: ")
 
-    config_path = os.path.expanduser("~/.ssh/config")
+    config_path = os.path.expanduser(SSH_CONFIG_FILE)
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     with open(config_path, "a") as f:
@@ -88,7 +92,7 @@ def add_new_host(ip,port):
         f.write(f"    User {user}\n")
         f.write(f"    Port {port}\n")
         f.write(f"    IdentityFile {identity_file}\n\n")
-    print(f"{ip}:{port} ({host})이 .ssh/config에 추가되었습니다.")
+    print(f"{ip}:{port} ({host})이 {SSH_CONFIG_FILE}에 추가되었습니다.")
 
 # SSH 접속 확인 함수
 def check_ssh_connection(host):
@@ -104,7 +108,7 @@ def check_ssh_connection(host):
     
     hostname = host_config.get('hostname')
     user = host_config.get('user')
-    port = host_config.get('port', 22)
+    port = int(host_config.get('port', 22))
     identityfile = host_config.get('identityfile')
     
     client = paramiko.SSHClient()
@@ -113,19 +117,34 @@ def check_ssh_connection(host):
         client.connect(
             hostname=hostname,
             username=user,
-            port=int(port),
+            port=port,
             key_filename=identityfile[0] if identityfile else None,
-            timeout=5
+            timeout=SSH_TIMEOUT
         )
         client.close()
         print(f"- {host} : Connected OK")
         return host, True, None
+
+    except paramiko.ssh_exception.AuthenticationException as e:
+        # e를 소문자로 변환
+        error_str = str(e).lower()
+        if "keyboard-interactive" in error_str or "Verification code" in error_str:
+            # 여기서 바로 사용자 입력을 받지 않고,
+            # "검증코드 필요 -> 접속 실패"로 처리하거나, 별도 목록에 넣음
+            print(f"- {host} : Verification needed (keyboard-interactive), skipped.")
+            return host, False, "Verification needed"
+        else:
+            print(f"- {host} : Authentication failed ({e})")
+            return host, False, e
+
     except Exception as e:
+        print(f"- {host} : Connection error ({e})")
         return host, False, e
+
 
 # 모든 호스트의 SSH 접속을 확인하는 함수
 def check_ssh_connections():
-    config_path = os.path.expanduser("~/.ssh/config")
+    config_path = os.path.expanduser(SSH_CONFIG_FILE)
     hosts = []
     with open(config_path, "r") as f:
         for line in f:
@@ -148,11 +167,15 @@ def check_ssh_connections():
 
 # 기본 IP 대역을 가져오는 함수 (임시로 고정값 사용)
 def get_default_ip_range():
-    # 로컬 IP를 동적으로 가져옴
-    local_ip = socket.gethostbyname(socket.gethostname())
-    # /16 대역으로 네트워크 설정
-    network = ipaddress.ip_network(f"{local_ip}/16", strict=False)
+    try:
+        local_ip = socket.gethostbyname(socket.gethostname())
+        # /16 대역으로 네트워크 설정
+        network = ipaddress.ip_network(f"{local_ip}/16", strict=False)
+    except Exception:
+        print("No local IP found. Default IP range is 10.0.0.0/0.")
+        network = ipaddress.ip_network("10.0.0.0/0", strict=False)
     return str(network)
+
 
 # SSH 포트를 가져오는 함수 (임시로 고정값 사용)
 def get_ssh_port():
