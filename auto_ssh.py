@@ -8,7 +8,7 @@ from tqdm import tqdm
 import os
 from datetime import datetime
 
-DEFAULT_KEY_DIR = os.getenv("SSH_KEY_DIR", "~/key")
+DEFAULT_KEY_DIR = os.getenv("SSH_KEY_DIR", "~/aws-key")
 SSH_CONFIG_FILE = os.getenv("SSH_CONFIG_FILE", "~/.ssh/config")
 SSH_MAX_WORKER = os.getenv("SSH_MAX_WORKER", 100)
 PORT_OPEN_TIMEOUT = os.getenv("PORT_OPEN_TIMEOUT", 0.5)
