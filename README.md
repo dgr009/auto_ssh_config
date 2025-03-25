@@ -1,126 +1,120 @@
-# SSH Config 자동 생성 스크립트
+# 🛠️ auto_ssh.py - 자동 SSH 구성 및 상태 점검 유틸리티
 
-## 개요
-이 스크립트는 지정된 IP 대역에서 SSH 포트(기본값: 22)가 열린 서버를 자동으로 검색하고, `~/.ssh/config` 파일에 새로운 호스트를 등록하는 기능을 수행합니다. 또한 기존에 등록된 SSH 호스트들의 접속 상태를 점검할 수 있습니다.
+자동으로 EC2 등 SSH 가능한 서버를 검색하고, `~/.ssh/config`에 추가하거나, 현재 등록된 호스트의 SSH 접속 가능 여부를 확인하는 Python 기반 툴입니다.
 
-## 주요 기능
-- **IP 대역 검색**: 지정된 IP 대역에서 SSH 포트가 열린 서버를 검색합니다.
-- **SSH 설정 자동 추가**: 검색된 서버를 `~/.ssh/config` 파일에 자동으로 등록합니다.
-- **SSH 접속 테스트**: `~/.ssh/config`에 등록된 호스트들의 SSH 접속 가능 여부를 확인합니다.
+---
 
-## 설치 및 실행 방법
-### 1. 필요한 패키지 설치
-스크립트 실행을 위해 아래 패키지가 필요합니다.
+## 🚀 주요 기능
+
+- CIDR 대역을 스캔하여 SSH 가능한 서버 자동 등록
+- `~/.ssh/config` 기반 등록 호스트들의 SSH 접속 상태 확인
+- `paramiko`, `rich`, `dotenv` 등 실전용 고급 라이브러리 기반
+- 로그 파일 자동 저장 (`logs/auto_ssh.log`)
+- 인증 실패, 검증코드 등 예외 상황도 로깅
+
+---
+
+## 📦 의존 패키지
 
 ```bash
-pip install paramiko tqdm
-```
+pip install -r requirements.txt
 
-### 2. 실행 방법
-```bash
-python script.py
-```
+requirements.txt 예시
 
-### 3. SSH 접속 확인 모드 실행
-```bash
-python script.py --check
-```
-
-## 환경 변수
-| 환경 변수            | 기본값                | 설명                           |
-|--------------------|---------------------|-------------------------------|
-| `SSH_KEY_DIR`      | `~/aws-key`         | SSH 키 파일이 저장된 디렉토리       |
-| `SSH_CONFIG_FILE`  | `~/.ssh/config`     | 병렬 처리를 위한 최대 스레드 수      |
-| `SSH_MAX_WORKER`   | `100`               | 병렬 처리를 위한 최대 스레드 수      |
-| `PORT_OPEN_TIMEOUT`| `0.5`               | 포트 열린 상태 체크 시 타임아웃(초)   |
-| `SSH_TIMEOUT`      | `3`                 | SSH 연결 타임아웃(초)             |
+paramiko
+tqdm
+python-dotenv
+rich
 
 
-## 상세 기능 설명
-### 1. 기존 SSH 호스트 확인 (`get_existing_hosts()`)
-- `~/.ssh/config` 파일에서 등록된 IP 주소를 읽어 기존에 등록된 호스트 목록을 생성합니다.
 
-### 2. 포트 열린 상태 확인 (`is_port_open()`)
-- 지정된 IP에서 특정 포트(기본: 22)가 열려 있는지 확인합니다.
+⸻
 
-### 3. IP 대역 스캔 (`scan_ip_range()`)
-- 사용자가 입력한 IP 대역을 기준으로 SSH 포트가 열린 서버를 병렬로 검색합니다.
+⚙️ 환경 변수 (.env)
 
-### 4. 새로운 SSH 호스트 추가 (`add_new_host()`)
-- 스캔된 서버를 `~/.ssh/config`에 등록할 것인지 사용자에게 확인받고 추가합니다.
-- SSH 사용자 및 키 파일을 선택할 수 있습니다.
+.env 또는 시스템 환경변수로 아래 값을 설정할 수 있습니다:
 
-### 5. SSH 접속 테스트 (`check_ssh_connection()` 및 `check_ssh_connections()`)
-- `~/.ssh/config`에 등록된 모든 호스트에 대해 SSH 연결 테스트를 수행하고, 실패한 경우 오류 메시지를 출력합니다.
-
-### 6. 기본 IP 대역 자동 감지 (`get_default_ip_range()`)
-- 현재 호스트의 IP를 기반으로 `/16` 서브넷을 자동으로 설정합니다.
-
-### 7. SSH 포트 설정 (`get_ssh_port()`)
-- 기본 SSH 포트(22)를 사용하며, 사용자가 직접 변경할 수 있습니다.
-
-## 실행 예시
-### 1. IP 대역 검색 및 SSH 등록
-```bash
-python script.py
-```
-- 실행 후 IP 대역을 입력하면 해당 범위에서 SSH 포트가 열린 서버를 검색하고, 등록 여부를 확인합니다.
-
-### 2. SSH 접속 확인 모드
-```bash
-python script.py --check
-```
-- `~/.ssh/config`에 등록된 모든 호스트에 대해 SSH 접속 가능 여부를 확인합니다.
-
-## 결과 예시
-### 1. 새로운 호스트 발견 시
-```
-Set IP Band : 192.168.1.0/24
-Set SSH Port : 22
-IP 스캔 진행 중: 100%|██████████| 254/254 [00:10<00:00, 24.9it/s]
-
-List of detected IPs:
- - 192.168.1.10
- - 192.168.1.20
-
-IP 192.168.1.10를 등록하시겠습니까?
-선택 (1: 등록, 0: 등록 안 함, 기본값 0): 1
-192.168.1.10의 호스트 이름을 입력하세요 (예: vm01): test-server
-사용자를 선택하세요 (기본값 1):
-1. ubuntu
-2. rocky
-3. ec2-user
-4. centos
-5. root
-6. 직접 입력
-선택 (1-6): 1
-IdentityFile을 선택하세요:
-1. my-key.pem
-2. other-key.pem
-3. 직접 입력
-선택 (1-3): 1
-192.168.1.10:22 (test-server)이 .ssh/config에 추가되었습니다.
-```
-
-### 2. SSH 접속 확인 결과
-```
-- test-server : Connected OK
-- another-server : Connected OK
-Connection Failed Hosts:
-- failed-server : Authentication failed.
-```
-
-## 주의사항
-- `~/.ssh/config` 파일을 직접 수정하므로 기존 설정이 유지되도록 주의하세요.
-- 실행 전에 SSH 키 디렉토리를 환경 변수 `SSH_KEY_DIR`로 설정해 두는 것이 좋습니다.
-- 검색하는 IP 대역이 너무 크면 속도가 느려질 수 있습니다.
-- SSH 접속 테스트는 병렬 실행되므로 서버에 과부하가 걸리지 않도록 주의하세요.
-- **Verification Code (2MFA)가 동작하는 서버가 config 파일에 포함될 경우 정상적인 작동이 불가능합니다.**
-
-## 개선 가능 사항
-- 다중 IP 대역 입력 기능 추가
-- JSON 또는 YAML 설정 파일을 사용한 자동화
-- GUI를 통한 SSH 설정 관리
-- 2MFA 인증 서버 스킵 기능 추가 필요
+변수명	설명	기본값
+SSH_KEY_DIR	개인키 폴더 경로	~/aws-key
+SSH_CONFIG_FILE	SSH config 경로	~/.ssh/config
+SSH_MAX_WORKER	스레드 동시 처리 수	50
+PORT_OPEN_TIMEOUT	포트 열림 확인 타임아웃	0.5
+SSH_TIMEOUT	SSH 연결 타임아웃	3
+LOG_LEVEL	전체 로그 레벨 (DEBUG, INFO…)	INFO
 
 
+
+⸻
+
+🧪 사용법
+
+1. CIDR 범위 내 SSH 가능한 서버 자동 등록
+
+python3 auto_ssh.py 192.168.0.0/24 --key ~/aws-key/my-key.pem
+
+	•	CIDR 범위의 서버 중 포트 22가 열려있는 대상에 대해 SSH 접속을 시도하고
+	•	호스트명을 얻어 ~/.ssh/config에 자동으로 추가합니다.
+
+⸻
+
+2. 기존 등록된 SSH 호스트 상태 점검
+
+python3 auto_ssh.py --check
+
+	•	~/.ssh/config에 등록된 모든 호스트에 대해 실제 SSH 접속을 시도합니다.
+	•	실패한 호스트는 테이블로 출력되며, 검증코드가 필요한 경우도 예외로 표시됩니다.
+
+⸻
+
+🧾 출력 예시
+
+✅ 신규 호스트 등록
+
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ IP               ┃ Hostname             ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ 192.168.0.21     │ ip-192-168-0-21      │
+│ 192.168.0.37     │ ip-192-168-0-37      │
+└──────────────────┴──────────────────────┘
+
+❌ SSH 접속 실패 호스트
+
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Host         ┃ Error                            ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ staging-1    │ timed out                        │
+│ bastion-03   │ Authentication failed            │
+└──────────────┴──────────────────────────────────┘
+
+
+
+⸻
+
+📁 로그 파일
+	•	모든 로깅은 logs/auto_ssh.log에 자동 저장됩니다.
+	•	콘솔 출력을 끄고 로그만 저장하고 싶을 경우, --silent 기능을 향후 추가로 적용 가능. (update 예정)
+
+⸻
+
+💡 팁
+	•	AWS, Oracle Cloud, 온프레미스 등 다양한 환경에서 활용 가능
+	•	keyboard-interactive 인증 등 MFA 요구되는 경우 자동 패스 처리
+	•	실서버 운영환경에서도 실수 없이 SSH 설정 가능하도록 설계됨
+
+⸻
+
+🧑‍💻 Author
+
+개발자: [SYKIM]
+문의: [cruiser594@gmail.com]
+
+⸻
+
+📝 License
+
+MIT License
+
+---
+
+필요하다면 `README.md` 파일로 저장해서 바로 제공해드릴게요.  
+또는 `--log-level`, `--silent` 같은 CLI 옵션이 추가되면 이에 맞게 바로 업데이트도 가능해요! 😎

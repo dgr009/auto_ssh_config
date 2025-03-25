@@ -1,0 +1,4 @@
+paramiko
+tqdm
+python-dotenv
+rich

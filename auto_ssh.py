@@ -1,109 +1,169 @@
+
+#!/usr/bin/env python3
+"""자동 SSH 접속을 위한 유틸리티 스크립트입니다."""
+
+import os
 import socket
 import ipaddress
+import argparse
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+
 import paramiko
 from paramiko.config import SSHConfig
-import argparse
-from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
-import os
-from datetime import datetime
+from dotenv import load_dotenv
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.table import Table
+import logging
 
-DEFAULT_KEY_DIR = os.getenv("SSH_KEY_DIR", "~/aws-key")
-SSH_CONFIG_FILE = os.getenv("SSH_CONFIG_FILE", "~/.ssh/config")
-SSH_MAX_WORKER = os.getenv("SSH_MAX_WORKER", 100)
-PORT_OPEN_TIMEOUT = os.getenv("PORT_OPEN_TIMEOUT", 0.5)
-SSH_TIMEOUT = os.getenv("SSH_TIMEOUT", 3)
+# 환경 변수 로딩
+load_dotenv()
+
+# 콘솔 및 로거 설정
+console = Console()
+os.makedirs("logs", exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,       # level of logging (INFO, WARN, ERROR)
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[
+        RichHandler(rich_tracebacks=True),
+        logging.FileHandler("logs/auto_ssh.log", mode='a', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger("auto-ssh")
+paramiko_logger = logging.getLogger("paramiko")
+paramiko_logger.setLevel(logging.WARNING)
+
+# 환경 변수 설정
+DEFAULT_KEY_DIR = os.getenv("SSH_KEY_DIR", os.path.expanduser("~/aws-key"))
+SSH_CONFIG_FILE = os.getenv("SSH_CONFIG_FILE", os.path.expanduser("~/.ssh/config"))
+SSH_MAX_WORKER = int(os.getenv("SSH_MAX_WORKER", 50))
+PORT_OPEN_TIMEOUT = float(os.getenv("PORT_OPEN_TIMEOUT", 0.5))
+SSH_TIMEOUT = float(os.getenv("SSH_TIMEOUT", 3))
 
 
-# 기존에 등록된 호스트 IP를 가져오는 함수
 def get_existing_hosts():
+    """기존에 등록된 호스트 IP를 SSH 설정에서 불러옵니다."""
     existing_ips = set()
-    config_path = os.path.expanduser(SSH_CONFIG_FILE)
     try:
-        if os.path.exists(config_path):
-            with open(config_path, "r") as f:
+        if os.path.exists(SSH_CONFIG_FILE):
+            with open(SSH_CONFIG_FILE, "r") as f:
                 for line in f:
                     if "Hostname" in line:
                         ip = line.strip().split()[-1]
                         existing_ips.add(ip)
     except IOError as e:
-        print(f"~/.ssh/config 파일을 읽는 중 오류 발생: {e}")
+        logger.exception("SSH 설정 파일 읽기 실패: %s", str(e))
+        console.print(f"[bold red]SSH 설정 파일 읽기 실패:[/bold red] {e}")
     return existing_ips
 
-# 포트가 열려 있는지 확인하는 함수
-def is_port_open(ip, port, timeout=PORT_OPEN_TIMEOUT):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    result = sock.connect_ex((str(ip), port))
-    sock.close()
-    return result == 0
 
-# IP 대역 스캔 함수
-def scan_ip_range(ip_range, port, exclude_ips):
-    open_ips = []
-    ips = [ip for ip in ip_range.hosts() if str(ip) not in exclude_ips]
-    with ThreadPoolExecutor(max_workers=SSH_MAX_WORKER) as executor:
-        futures = {executor.submit(is_port_open, ip, port): ip for ip in ips}
-        for future in tqdm(futures, total=len(futures), desc="IP 스캔 진행 중"):
-            if future.result():
-                open_ips.append(futures[future])
-    return open_ips
+def is_port_open(ip, port=22):
+    """지정된 IP와 포트가 열려 있는지 확인합니다."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(PORT_OPEN_TIMEOUT)
+        try:
+            result = sock.connect_ex((str(ip), port))
+            return result == 0
+        except Exception as e:
+            logger.debug("포트 확인 중 예외 발생: %s", str(e))
+            return False
 
-# 새 호스트를 .ssh/config에 추가하는 함수
-def add_new_host(ip,port):
-    print(f"\nIP {ip}를 등록하시겠습니까?")
-    choice = input("선택 (1: 등록, 0: 등록 안 함, 기본값 0): ") or "0"
-    if choice != "1":
-        print(f"{ip} 등록을 건너뜁니다.")
-        return
-    
-    host = input(f"{ip}의 호스트 이름을 입력하세요 (예: vm01): ")
-    user_options = ["ubuntu", "rocky", "ec2-user", "centos", "root", "직접 입력"]
-    print("사용자를 선택하세요 (기본값 1):")
-    for i, opt in enumerate(user_options, 1):
-        print(f"{i}. {opt}")
-    user_choice = input("선택 (1-6): ") or "1"
+
+def generate_ip_range(cidr):
+    """CIDR 범위 내 IP 목록을 생성합니다."""
     try:
-        user_idx = int(user_choice) - 1
-        if 0 <= user_idx < len(user_options):
-            user = user_options[user_idx] if user_idx != 5 else input("사용자 이름 입력: ")
-        else:
-            print("잘못된 선택입니다. 기본값 'ubuntu'를 사용합니다.")
-            user = "ubuntu"
-    except ValueError:
-        print("숫자를 입력해야 합니다. 기본값 'ubuntu'를 사용합니다.")
-        user = "ubuntu"
-    key_dir = os.path.expanduser(DEFAULT_KEY_DIR)
-    key_files = [f for f in os.listdir(key_dir) if f.endswith((".pem", ".pub", ".key"))]
-    print("IdentityFile을 선택하세요:")
-    for i, key in enumerate(key_files, 1):
-        print(f"{i}. {key}")
-    print(f"{len(key_files) + 1}. 직접 입력")
-    key_choice = input(f"선택 (1-{len(key_files) + 1}): ") or "1"
-    identity_file = f"~/key/{key_files[int(key_choice) - 1]}" if int(key_choice) <= len(key_files) else input("경로 입력: ")
+        network = ipaddress.IPv4Network(cidr)
+        return [str(ip) for ip in network.hosts()]
+    except ValueError as e:
+        logger.error("유효하지 않은 CIDR: %s", cidr)
+        console.print(f"[bold red]CIDR 에러:[/bold red] {e}")
+        return []
 
-    config_path = os.path.expanduser(SSH_CONFIG_FILE)
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    with open(config_path, "a") as f:
-        f.write(f"\n# Added by auto_ssh.py on {current_time}\n")
-        f.write(f"\nHost {host}\n")
-        f.write(f"    HostName {ip}\n")
-        f.write(f"    User {user}\n")
-        f.write(f"    Port {port}\n")
-        f.write(f"    IdentityFile {identity_file}\n\n")
-    print(f"{ip}:{port} ({host})이 {SSH_CONFIG_FILE}에 추가되었습니다.")
+def get_hostname_via_ssh(ip, key_path):
+    """SSH를 통해 호스트명(hostname)을 가져옵니다."""
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(str(ip), username="ec2-user", key_filename=key_path, timeout=SSH_TIMEOUT)
+        stdin, stdout, stderr = ssh.exec_command("hostname")
+        hostname = stdout.read().decode().strip()
+        ssh.close()
+        return hostname
+    except Exception as e:
+        logger.warning("SSH 실패 (%s): %s", ip, str(e))
+        return None
+
+
+def update_ssh_config(ip, hostname, key_path):
+    """SSH 설정 파일에 새로운 호스트 항목을 추가합니다."""
+    try:
+        with open(SSH_CONFIG_FILE, "a") as f:
+            f.write(f"\nHost {hostname}\n")
+            f.write(f"    Hostname {ip}\n")
+            f.write(f"    User ec2-user\n")
+            f.write(f"    IdentityFile {key_path}\n")
+        logger.info("SSH config 업데이트: %s (%s)", hostname, ip)
+    except Exception as e:
+        logger.error("SSH config 업데이트 실패: %s", str(e))
+
+
+def scan_and_add_hosts(cidr, key_path):
+    """CIDR 대역을 스캔하여 포트가 열려 있고 등록되지 않은 호스트를 추가합니다."""
+    existing_hosts = get_existing_hosts()
+    ip_list = generate_ip_range(cidr)
+    results = []
+
+    with ThreadPoolExecutor(max_workers=SSH_MAX_WORKER) as executor:
+        futures = {
+            executor.submit(is_port_open, ip): ip for ip in ip_list if ip not in existing_hosts
+        }
+        for future in tqdm(futures, desc="Scanning"):
+            ip = futures[future]
+            try:
+                if future.result():
+                    hostname = get_hostname_via_ssh(ip, key_path)
+                    if hostname:
+                        update_ssh_config(ip, hostname, key_path)
+                        results.append({ "IP": ip, "Hostname": hostname })
+            except Exception as e:
+                logger.error("호스트 처리 중 오류 (%s): %s", ip, str(e))
+
+    if results:
+        table = Table(title="등록된 SSH 호스트")
+        table.add_column("IP", style="cyan", no_wrap=True)
+        table.add_column("Hostname", style="green")
+        for entry in results:
+            table.add_row(entry["IP"], entry["Hostname"])
+        console.print(table)
+    else:
+        console.print("[yellow]새로 등록된 호스트가 없습니다.[/yellow]")
+
+
+# def check_ssh_connection(host):
+#     """단일 호스트에 대해 SSH 접속 가능 여부를 확인합니다."""
+#     try:
+#         ssh = paramiko.SSHClient()
+#         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+#         ssh.connect(host, username="ec2-user", timeout=SSH_TIMEOUT)
+#         ssh.close()
+#         return (host, True, None)
+#     except Exception as e:
+#         return (host, False, str(e))
 
 # SSH 접속 확인 함수
 def check_ssh_connection(host):
-    config_path = os.path.expanduser("~/.ssh/config")
+    config_path = os.path.expanduser(SSH_CONFIG_FILE)
     ssh_config = SSHConfig()
     with open(config_path, "r") as f:
         ssh_config.parse(f)
     
     host_config = ssh_config.lookup(host)
     if not host_config:
-        print(f"{host}에 대한 설정이 ~/.ssh/config에 없습니다.")
         return host, False, None
     
     hostname = host_config.get('hostname')
@@ -122,8 +182,7 @@ def check_ssh_connection(host):
             timeout=SSH_TIMEOUT
         )
         client.close()
-        print(f"- {host} : Connected OK")
-        return host, True, None
+        return (host, True, None)
 
     except paramiko.ssh_exception.AuthenticationException as e:
         # e를 소문자로 변환
@@ -131,101 +190,67 @@ def check_ssh_connection(host):
         if "keyboard-interactive" in error_str or "Verification code" in error_str:
             # 여기서 바로 사용자 입력을 받지 않고,
             # "검증코드 필요 -> 접속 실패"로 처리하거나, 별도 목록에 넣음
-            print(f"- {host} : Verification needed (keyboard-interactive), skipped.")
-            return host, False, "Verification needed"
+            # print(f"- {host} : Verification needed (keyboard-interactive), skipped.")
+            return (host, False, str(e))
         else:
-            print(f"- {host} : Authentication failed ({e})")
-            return host, False, e
+            # print(f"- {host} : Authentication failed ({e})")
+            return (host, False, str(e))
 
     except Exception as e:
-        print(f"- {host} : Connection error ({e})")
-        return host, False, e
+        # print(f"- {host} : Connection error ({e})")
+        return (host, False, str(e))
 
-
-# 모든 호스트의 SSH 접속을 확인하는 함수
 def check_ssh_connections():
+    """SSH config에 정의된 모든 호스트의 연결 상태를 확인합니다."""
     config_path = os.path.expanduser(SSH_CONFIG_FILE)
     hosts = []
-    with open(config_path, "r") as f:
-        for line in f:
-            if line.strip().startswith("Host "):
-                hosts.append(line.strip().split()[1])
+
+    try:
+        with open(config_path, "r") as f:
+            for line in f:
+                if line.strip().startswith("Host "):
+                    host = line.strip().split()[1]
+                    if host != "*":
+                        hosts.append(host)
+    except Exception as e:
+        logger.exception("SSH 설정 파일 읽기 실패: %s", e)
+        console.print(f"[bold red]SSH 설정 파일 읽기 실패:[/bold red] {e}")
+        return
 
     failed_hosts = []
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=SSH_MAX_WORKER) as executor:
         results = executor.map(check_ssh_connection, hosts)
-        for host, success, e in results:
+        for host, success, error in results:
             if not success:
-                failed_hosts.append((host, e))
-    
+                failed_hosts.append((host, error))
+
     if failed_hosts:
-        print("Connection Failed Hosts:")
+        table = Table(title="SSH 연결 실패 호스트", show_lines=True)
+        table.add_column("Host", style="red")
+        table.add_column("Error", style="yellow")
         for host, error in failed_hosts:
-            print(f"{host} : {error}")
+            table.add_row(host, error)
+        console.print(table)
     else:
-        print("All hosts connected successfully!")
+        console.print("[bold green]모든 호스트에 성공적으로 연결되었습니다.[/bold green]")
 
-# 기본 IP 대역을 가져오는 함수 (임시로 고정값 사용)
-def get_default_ip_range():
-    try:
-        local_ip = socket.gethostbyname(socket.gethostname())
-        # /16 대역으로 네트워크 설정
-        network = ipaddress.ip_network(f"{local_ip}/16", strict=False)
-    except Exception:
-        print("No local IP found. Default IP range is 10.0.0.0/0.")
-        network = ipaddress.ip_network("10.0.0.0/0", strict=False)
-    return str(network)
-
-
-# SSH 포트를 가져오는 함수 (임시로 고정값 사용)
-def get_ssh_port():
-    # 사용자 입력을 받고, 입력이 없으면 기본값 22 사용
-    port = input("조회할 SSH 포트를 입력하세요 (기본값 22): ") or "22"
-    return int(port)
-
-# 메인 함수
 def main():
-    # 사용자가 언급한 코드 부분이 여기 포함됨!
-    parser = argparse.ArgumentParser(description="SSH Config 자동 생성 스크립트")
-    parser.add_argument("--check", action="store_true", help="SSH 접속 확인 실행")
+    parser = argparse.ArgumentParser(description="자동 SSH 호스트 스캐너")
+    parser.add_argument("cidr", nargs="?", help="검색할 CIDR (예: 192.168.0.0/24)")
+    parser.add_argument("--key", help="SSH 개인키 경로", default=os.path.join(DEFAULT_KEY_DIR, "default-key.pem"))
+    parser.add_argument("--check", action="store_true", help="모든 SSH 호스트 연결 확인")
+
     args = parser.parse_args()
 
     if args.check:
+        logger.info("모든 SSH 호스트 연결 상태 확인 시작")
         check_ssh_connections()
+    elif args.cidr:
+        logger.info("스캔 시작: %s", args.cidr)
+        scan_and_add_hosts(args.cidr, args.key)
     else:
-        # IP 대역 설정
-        default_ip_range = get_default_ip_range()
-        ip_range_input = input(f"IP 대역을 입력하세요 (기본값 {default_ip_range}): ") or default_ip_range
-        ip_range = ipaddress.ip_network(ip_range_input, strict=False)
-        
-        # SSH 포트 설정
-        port = get_ssh_port()
-        
-        # 자기 자신의 IP 가져오기
-        local_ip = socket.gethostbyname(socket.gethostname())
-        
-        print(f"Set IP Band : {ip_range}")
-        print(f"Set SSH Port : {port}")
+        console.print("[bold red]CIDR 또는 --check 옵션을 입력해주세요.[/bold red]")
 
-        # 기존에 등록된 IP 가져오기
-        existing_ips = get_existing_hosts()
-        
-        # 제외할 IP: 자기 자신 + 기존 등록된 IP
-        exclude_ips = set([local_ip]) | existing_ips
-        
-        # IP 스캔 실행
-        open_ips = scan_ip_range(ip_range, port, exclude_ips)
-        
-        # 새로 추가할 IP 처리
-        if open_ips:
-            print("\nList of detected IPs:")
-            for ip in open_ips:
-                print(f" - {str(ip)}")
-            
-            for ip in open_ips:
-                add_new_host(str(ip),port)
-        else:
-            print("No new IPs to add")
 
 if __name__ == "__main__":
     main()
