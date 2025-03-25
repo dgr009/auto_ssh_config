@@ -106,11 +106,10 @@ python3 auto_ssh.py --check
 
 ## 🧑‍💻 Author
 
-개발자: [당신의 이름]  
-문의: [you@example.com]
+개발자: [SYKIM]  
+문의: [cruiser594@gmail.com]
 
 ---
 
 ## 📝 License
-
-MIT License
+NONE
