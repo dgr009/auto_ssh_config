@@ -26,7 +26,7 @@ console = Console()
 os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
-    level=logging.WARN,
+    level=logging.INFO,       # level of logging (INFO, WARN, ERROR)
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     handlers=[
         RichHandler(rich_tracebacks=True),
@@ -34,6 +34,8 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("auto-ssh")
+paramiko_logger = logging.getLogger("paramiko")
+paramiko_logger.setLevel(logging.WARNING)
 
 # 환경 변수 설정
 DEFAULT_KEY_DIR = os.getenv("SSH_KEY_DIR", os.path.expanduser("~/aws-key"))
