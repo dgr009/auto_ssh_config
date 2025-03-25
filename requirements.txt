@@ -2,3 +2,4 @@ paramiko
 tqdm
 python-dotenv
 rich
+netifaces
